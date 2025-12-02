@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { MOCK_PRODUCTS, CATEGORIES } from './constants';
 import { Product, SortField, SortOrder } from './types';
 import { InventoryTable } from './components/InventoryTable';
@@ -15,12 +15,36 @@ import {
   Brain,
   X,
   RefreshCcw,
-  Box
+  Box,
+  ChevronDown,
+  Download
 } from 'lucide-react';
 
 const App = () => {
   const [products, setProducts] = useState<Product[]>(MOCK_PRODUCTS);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  // Debounce search input
+  const debounce = (func: Function, delay: number) => {
+    let timeoutId: NodeJS.Timeout;
+    return (...args: any[]) => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => func(...args), delay);
+    };
+  };
+  
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const debouncedSetSearchTerm = useCallback(
+    debounce((term: string) => setSearchTerm(term), 300),
+    []
+  );
+  
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSearchQuery(value);
+    debouncedSetSearchTerm(value);
+  };
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | undefined>(undefined);
@@ -28,6 +52,10 @@ const App = () => {
   // Sorting State
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
+  
+  // Filter State
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [stockStatusFilter, setStockStatusFilter] = useState<string>('all');
 
   // AI Insights State
   const [aiInsights, setAiInsights] = useState<string | null>(null);
@@ -45,17 +73,111 @@ const App = () => {
     };
   }, [products]);
 
+  // Stock status options
+  const stockStatusOptions = [
+    { value: 'all', label: 'All Products' },
+    { value: 'in_stock', label: 'In Stock' },
+    { value: 'low_stock', label: 'Low Stock' },
+    { value: 'out_of_stock', label: 'Out of Stock' }
+  ];
+
+  // Handle stock status filter change
+  const handleStockStatusFilter = (status: string) => {
+    setStockStatusFilter(status);
+    setIsFilterOpen(false);
+    
+    // Log the current filter state for debugging
+    console.log('Filter changed to:', status);
+  };
+
+  const handleExport = () => {
+    const exportData = filteredProducts.map(product => ({
+      'Batch ID': product.batchId || `B${String(product.id).slice(-3).padStart(3, '0')}`,
+      'Product Name': product.name,
+      'Category': product.category,
+      'Description': product.description || '',
+      'Price': `₱${product.price.toFixed(2)}`,
+      'Cost': `₱${product.cost.toFixed(2)}`,
+      'Stock': product.stock,
+      'Min Stock': product.minStock,
+      'Status': product.stock === 0 ? 'Out of Stock' : 
+                product.stock <= product.minStock ? 'Low Stock' : 'In Stock',
+      'Expiry Date': product.expiryDate || 'N/A',
+      'Barcode': product.barcode || '',
+      'Last Updated': new Date(product.updatedAt).toLocaleDateString()
+    }));
+
+    // Convert to CSV
+    const headers = Object.keys(exportData[0]);
+    const csvContent = [
+      headers.join(','),
+      ...exportData.map(row => 
+        headers.map(fieldName => 
+          `"${String(row[fieldName as keyof typeof row] || '').replace(/"/g, '""')}"`
+        ).join(',')
+      )
+    ].join('\n');
+
+    // Create download link
+    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `inventory_export_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   // Filtering & Sorting
   const filteredProducts = useMemo(() => {
-    let result = products.filter(p => {
-      const matchesSearch = 
-        p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        (p.barcode && p.barcode.includes(searchQuery));
-      const matchesCategory = selectedCategory === 'All' || p.category === selectedCategory;
-      const matchesActive = p.isActive; // Only show active by default? Let's show all but visualize archived
-      
-      return matchesSearch && matchesCategory;
+    console.log('Filtering products with:', {
+      searchTerm,
+      selectedCategory,
+      stockStatusFilter,
+      totalProducts: products.length
     });
+
+    let result = products.filter(p => {
+      // 1. Search filter (optimized with early return)
+      if (searchTerm) {
+        const term = searchTerm.toLowerCase();
+        if (!p.name.toLowerCase().includes(term) && 
+            !(p.barcode && p.barcode.toLowerCase().includes(term))) {
+          return false;
+        }
+      }
+
+      const matchesCategory = selectedCategory === 'All' || p.category === selectedCategory;
+      
+      // Enhanced stock status filtering with debugging
+      const isOutOfStock = p.stock === 0;
+      const isLowStock = p.stock > 0 && p.stock <= p.minStock;
+      const isInStock = p.stock > p.minStock;
+      
+      const matchesStockStatus = 
+        stockStatusFilter === 'all' ||
+        (stockStatusFilter === 'out_of_stock' && isOutOfStock) ||
+        (stockStatusFilter === 'low_stock' && isLowStock) ||
+        (stockStatusFilter === 'in_stock' && isInStock);
+      
+      const isMatch = matchesCategory && matchesStockStatus;
+      
+      if (isMatch) {
+        console.log('Product matches filters:', {
+          name: p.name,
+          stock: p.stock,
+          minStock: p.minStock,
+          status: isOutOfStock ? 'Out of Stock' : isLowStock ? 'Low Stock' : 'In Stock',
+          matchesCategory,
+          matchesStockStatus
+        });
+      }
+      
+      return isMatch;
+    });
+    
+    console.log(`Filter result: ${result.length} of ${products.length} products match the filters`);
 
     return result.sort((a, b) => {
       const aValue = a[sortField];
@@ -69,7 +191,7 @@ const App = () => {
       if (aValue > bValue) return sortOrder === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [products, searchQuery, selectedCategory, sortField, sortOrder]);
+  }, [products, searchTerm, selectedCategory, sortField, sortOrder, stockStatusFilter]);
 
   // Handlers
   const handleSort = (field: SortField) => {
@@ -128,7 +250,7 @@ const App = () => {
               <div className="bg-indigo-600 p-2 rounded-lg">
                 <Box className="text-white h-5 w-5" />
               </div>
-              <h1 className="text-xl font-bold text-gray-900 tracking-tight">Lumina Inventory</h1>
+              <h1 className="text-xl font-bold text-gray-900 tracking-tight">LW Inventory</h1>
             </div>
             <div className="flex items-center gap-4">
               <span className="text-sm text-gray-500">Welcome back, Admin</span>
@@ -230,7 +352,7 @@ const App = () => {
                   placeholder="Search by name or barcode..." 
                   className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition shadow-sm"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={handleSearchChange}
                 />
               </div>
               <div className="relative">
@@ -245,13 +367,60 @@ const App = () => {
               </div>
             </div>
 
-            <button 
-              onClick={openAddModal}
-              className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium text-sm shadow-md shadow-indigo-200"
-            >
-              <Plus size={18} />
-              Add Product
-            </button>
+            <div className="flex space-x-4">
+              <div className="relative inline-block text-left">
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setIsFilterOpen(!isFilterOpen)}
+                    className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  >
+                    <Filter className="w-4 h-4 mr-2" />
+                    {stockStatusOptions.find(opt => opt.value === stockStatusFilter)?.label || 'Filter'}
+                    <ChevronDown className="w-4 h-4 ml-2 -mr-1" />
+                  </button>
+                </div>
+
+                {isFilterOpen && (
+                  <div className="absolute right-0 z-10 w-56 mt-2 origin-top-right bg-white rounded-md shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
+                    <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="filter-menu">
+                      <div className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase">Stock Status</div>
+                      {stockStatusOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          onClick={() => handleStockStatusFilter(option.value)}
+                          className={`block w-full px-4 py-2 text-sm text-left ${
+                            stockStatusFilter === option.value 
+                              ? 'bg-gray-100 text-gray-900' 
+                              : 'text-gray-700 hover:bg-gray-50'
+                          }`}
+                          role="menuitem"
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              <button 
+                onClick={handleExport}
+                disabled={filteredProducts.length === 0}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Export to CSV"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Export
+              </button>
+              <button 
+                onClick={openAddModal}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Add Product
+              </button>
+            </div>
           </div>
 
           <InventoryTable 

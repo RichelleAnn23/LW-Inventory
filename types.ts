@@ -1,6 +1,7 @@
 export interface Product {
   id: number;
   barcode: string | null;
+  batchId?: string; // Optional batch ID
   name: string;
   category: string;
   description: string | null;
@@ -21,5 +22,5 @@ export interface InventoryStats {
   expiredCount: number;
 }
 
-export type SortField = 'name' | 'stock' | 'price' | 'expiryDate';
+export type SortField = 'name' | 'stock' | 'price' | 'expiryDate' | 'batchId' | 'category';
 export type SortOrder = 'asc' | 'desc';
